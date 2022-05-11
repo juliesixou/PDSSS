@@ -12,6 +12,8 @@ Les fichiers d'inputs sont issus directement des données en libre accès (fichi
   - compo_csp_pond_new.xlsx : base avec proportion par année et departement des PCS (issue du recensement)
   - contiguous.xlsx et contiguous_cols.xlsx : bases des départements voisins par département (deux formats différents). Contiguous_cols_nobret est le même fichier sans la Bretagne
   - RP_pour_densite.xlsx: variable de nombre d'habitants par km² par département et année (issue du recensement)
+  - distance_bretagne.csv : fichier de distance des département à la Bretagne (ie au département breton le plus proche). Ce sont les distances entre centroïdes.
+  - matrice_distance_paires.csv : fichier de distances entre centroîdes de département
 
 
 D'autre part, les fichiers de code sont:
