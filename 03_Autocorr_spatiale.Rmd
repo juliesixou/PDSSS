@@ -1,0 +1,101 @@
+---
+title: "03_Autocorr_spatiale"
+output: html_document
+---
+
+```{r}
+library(spdep)
+library(dplyr)
+library(readxl)
+library(igraph)
+library(reshape2)
+```
+
+```{r}
+contiguite <- read_xlsx("contiguous_cols.xlsx") %>% 
+  filter(dpt!="20")
+
+contiguite_nobret <- read_xlsx("contiguous_cols_nobret.xlsx") %>% 
+  filter(dpt!="20")
+
+bretons <- read_xlsx("prop_bretons_annee_dep_new.xlsx") %>% 
+  mutate(dep_res=as.numeric(dep_res)) %>% 
+  filter(dep_res <= 95) %>% 
+  filter(!(is.na(dep_res)))
+
+colnames(bretons) <- c("dpt","p68","p75","82","p90","p99","p06")
+
+prenoms_bretons_68 <- read_xlsx("base68.xlsx") %>% 
+  select(dpt,freq) %>% 
+  rename(prenbret=freq) %>% 
+  filter(dpt<=95) %>% 
+  filter(dpt!=20)
+
+prenoms_bretons_06 <- read_xlsx("base06.xlsx") %>% 
+  select(dpt,freq) %>% 
+  rename(prenbret=freq) %>% 
+  filter(dpt<=95) %>% 
+  filter(dpt!=20)
+```
+
+```{r}
+df_voisins <- melt(contiguite,id.vars = "dpt") %>% 
+  filter(!(is.na(value))) %>% 
+  select(-variable) %>% 
+  filter(value!=20,dpt!=20)
+adja <- get.adjacency(graph.edgelist(as.matrix(df_voisins), directed=FALSE))
+adja <- as.matrix(adja)
+adja <- adja[-20,-20]
+adja <- adja/2
+rownames(adja) <- prenoms_bretons_68$dpt
+my_listw <- mat2listw(adja,  style="M")
+```
+
+```{r}
+moran.plot(prenoms_bretons_68$prenbret,my_listw,xlab="Part de prénoms bretons",ylab="Moyenne de la part de prénoms bretons dans les départements voisins",main="Diagramme de Moran de la part de prénoms bretons \n (1968, France métropolitaine hors Corse)")
+moran.test(prenoms_bretons_68$prenbret,my_listw)
+```
+
+
+```{r}
+moran.plot(prenoms_bretons_06$prenbret,my_listw,xlab="Part de prénoms bretons",ylab="Moyenne de la part de prénoms bretons dans les départements voisins",main="Diagramme de Moran de la part de prénoms bretons \n (2006, France métropolitaine hors Corse)")
+moran.test(prenoms_bretons_06$prenbret,my_listw)
+```
+
+
+
+
+## Même analyse dans une France sans Bretagne
+
+```{r}
+prenbret68_nobret <- prenoms_bretons_68 %>% filter(!(dpt %in% c(22,29,35,56)))
+prenbret06_nobret <- prenoms_bretons_06 %>% filter(!(dpt %in% c(22,29,35,56)))
+
+```
+
+
+```{r}
+df_voisins_nobret <- melt(contiguite_nobret,id.vars = "dpt") %>% 
+  filter(!(is.na(value))) %>% 
+  select(-variable) %>% 
+  filter(value!=20,dpt!=20)
+adja_nobret <- get.adjacency(graph.edgelist(as.matrix(df_voisins_nobret), directed=FALSE))
+adja_nobret <- as.matrix(adja_nobret)
+adja_nobret <- adja_nobret[-c(20,22,29,35,56),-c(20,22,29,35,56)]
+adja_nobret <- adja_nobret/2
+rownames(adja_nobret) <- prenbret68_nobret$dpt
+my_listw_nobret <- mat2listw(adja_nobret,  style="M")
+```
+
+
+
+```{r}
+moran.plot(prenbret68_nobret$prenbret,my_listw_nobret,xlab="Part de prénoms bretons",ylab="Moyenne de la part de prénoms bretons dans les départements voisins",main="Diagramme de Moran de la part de prénoms bretons \n (1968, France métropolitaine hors Corse et hors Bretagne)")
+moran.test(prenbret68_nobret$prenbret,my_listw_nobret)
+```
+
+```{r}
+moran.plot(prenbret06_nobret$prenbret,my_listw_nobret,xlab="Part de prénoms bretons",ylab="Moyenne de la part de prénoms bretons dans les départements voisins",main="Diagramme de Moran de la part de prénoms bretons \n (2006, France métropolitaine hors Corse et hors Bretagne)")
+moran.test(prenbret06_nobret$prenbret,my_listw_nobret,alternative="greater")
+```
+
