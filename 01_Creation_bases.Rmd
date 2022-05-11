@@ -1,0 +1,1446 @@
+---
+title: "prenoms_bretons"
+author: "Cecile"
+date: "12/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Description du document
+
+Ce code vise à créer les bases de données (pour chaque année considérée) comportant les variables suivantes :
+  - La part de prénoms bretons donnés par département
+  - L'âge moyen des prénoms bretons par département
+  - la composition socio-démographique et régionale des départements
+  - Ces mêmes variables en moyenne pour les départements voisins
+  - La variable qui indique si le département est breton
+  
+Nous créons également la base des paires de départements (pour la régression sur les distances de Manhattan)
+  
+Il est divisé en plusieurs étapes :
+  - Importation de la base des prénoms bretons
+  - Calcul des pourcentages de prénoms bretons donnés par année considérée et département
+  - Calcul de l'âge moyen des prénoms bretons donnés par année considérée et département
+  - Ajout de la part de personnes d'origine bretonne par département
+  - Ajout des compositions socio-professionnelle 
+  - Ajout des départements voisins et des variables associées
+  - Ajout de la variables indicatrice Bretagne
+  - Création des paires de départements comportant l'indicatrice de contiguité
+  - Exportation des bases finales
+  
+Inputs :
+  - prenoms_bretons.xlsx : liste de prénoms bretons
+  - dpt2020.csv : fichiers des prénoms de l'INSEE
+  - prop_bretons_annee_dep_new.xlsx : prop de personnes nées en bretagne par année et département
+  - compo_csp_pond_new.xlsx : base avec proportion par année et departement des PCS
+  - contiguous.xlsx : base des départements voisins par département
+  - RP_pour_densite.xlsx: à partir du recensement, variable de nombre d'habitants par km² par département et année
+  - distance_bretagne.csv : fichier de distance des département à la Bretagne (ie au département breton le plus proche). Ce sont les distances entre centroïdes.
+  - matrice_distance_paires.csv : fichier de distances entre centroîdes de département
+  
+Outputs :
+  - base68.xlsx
+  - base75.xlsx
+  - base82.xlsx
+  - base90.xlsx
+  - base99.xlsx
+  - base06.xlsx
+  - paires.xlsx
+
+Dictionnaire des variables :
+
+Bases années départements :
+"dpt" = département       
+"freq" = part de prénoms bretons donnés      
+"part_bret" = part de la population née en Bretagne 
+"age_moy" = âge moyen des prénoms bretons   
+"prop_agr" = part d'agriculteurs  
+"prop_art" = ârt d'artisants 
+"prop_cad" = part de cadres  
+"prop_pi" = part de professions intermédiaires   
+"prop_emp" = part d'employés  
+"prop_ouv" = part d'ouvriers  
+"prop_anc" = part d'anciens actifs
+"prop_ina" = part d'inactifs et chômeurs n'ayant jamais travaillé 
+"voisins" = liste des départements voisins  
+"avg_cont" = part moyenne de prénoms bretons dans les départements voisins
+"bret_cont" = part moyenne de résidents nés en Bretagne dans les départements voisins 
+"age_cont" = âge moyen des prénoms bretons dans les départements voisins  
+"csp_cont" = part moyenne de la PCS dans les départements voisins
+"reg_bret" = indicatrice que le département est dans la région Bretagne
+"dist_min" = plus petite distance à un des départements de la Bretagne (autre que lui-même si le département est en Bretagne). C'est la distance en mètres entre les centroides.
+
+Base paires :
+"dpt1" = premier département
+"dpt2" = deuxième département
+"voisins.x" = voisins du premier département
+"voisins.y" = voisins du deuxième département
+"ind_voisins" = 1 si les dpt1 et dpt2 sont voisins, 0 sinon
+"distange_geo" = distance en mètres entre les centroides des départements
+
+
+
+```{r}
+library(dplyr)
+library(readxl)
+library(tidyverse)
+library("writexl")
+library(foreign)
+```
+
+# Chargement des bases données
+
+
+```{r}
+#Liste de prénoms bretons
+listb <- read_excel("prenoms_bretons.xlsx")%>% 
+  distinct(.keep_all = TRUE) %>%
+  mutate(prenom=str_to_upper(prenom))
+  
+```
+
+
+```{r}
+#Fichier des prénoms de l'INSEE
+prenoms <- read.csv("dpt2020.csv",sep=";",encoding = "UTF-8") %>%
+  mutate(annais=as.numeric(annais)) %>%
+  mutate(nombre=as.numeric(nombre)) %>%
+  mutate(breton=ifelse(preusuel %in% listb$prenom,1,0))
+
+```
+
+```{r}
+#Prénoms bretons présents dans le fichier des prénoms de l'INSEE
+prenoms_bretons_donnes <- prenoms %>% filter(breton==1) %>% distinct(preusuel)
+```
+
+```{r}
+#Prénoms aléatoires pour le test de robustesse
+prenoms_alea <- read.csv("dpt2020.csv",sep=";",encoding = "UTF-8") %>%
+  mutate(annais=as.numeric(annais)) %>%
+  mutate(nombre=as.numeric(nombre)) %>%
+  group_by(preusuel) %>% 
+  summarise(nb_ts=sum(nombre)) %>% 
+  top_n(n=371)
+
+prenoms_alea <- prenoms_alea %>% filter(!(preusuel %in% listb$prenom) & preusuel != "_PRENOMS_RARES")
+
+liste_alea <- c(prenoms_alea)$preusuel
+prenoms <- prenoms %>% mutate(alea=ifelse(preusuel %in% liste_alea,1,0))
+```
+
+# Part de prénoms bretons donnés par département
+
+```{r}
+#1968
+part68 <- prenoms %>%
+  filter(annais==1968) %>%
+  group_by(dpt) %>%
+  summarise(freq=sum(nombre[breton==1]),freq_alea=sum(nombre[alea==1]))
+
+nais_dep68 <- prenoms %>% 
+  filter(annais==1968) %>%
+  group_by(dpt) %>% 
+  summarise(nb_naissances=sum(nombre))
+
+part68 <- part68 %>%
+  left_join(nais_dep68, by="dpt") %>%
+  mutate(freq=freq/nb_naissances,freq_alea=freq_alea/nb_naissances) %>%
+  ungroup () %>%
+  select(-nb_naissances)
+
+
+#1975
+part75 <- prenoms %>%
+  filter(annais==1975) %>%
+  group_by(dpt) %>%
+  summarise(freq=sum(nombre[breton==1]),freq_alea=sum(nombre[alea==1]))
+
+nais_dep75 <- prenoms %>% 
+  filter(annais==1975) %>%
+  group_by(dpt) %>% 
+  summarise(nb_naissances=sum(nombre))
+
+part75 <- part75 %>%
+  left_join(nais_dep75, by="dpt") %>%
+  mutate(freq=freq/nb_naissances,freq_alea=freq_alea/nb_naissances) %>%
+  ungroup () %>%
+  select(-nb_naissances)
+
+#1982
+part82 <- prenoms %>%
+  filter(annais==1982) %>%
+  group_by(dpt) %>%
+  summarise(freq=sum(nombre[breton==1]),freq_alea=sum(nombre[alea==1]))
+
+nais_dep82 <- prenoms %>% 
+  filter(annais==1982) %>%
+  group_by(dpt) %>% 
+  summarise(nb_naissances=sum(nombre))
+
+part82 <- part82 %>%
+  left_join(nais_dep82, by="dpt") %>%
+  mutate(freq=freq/nb_naissances,freq_alea=freq_alea/nb_naissances) %>%
+  ungroup () %>%
+  select(-nb_naissances)
+
+#1990
+part90 <- prenoms %>%
+  filter(annais==1990) %>%
+  group_by(dpt) %>%
+  summarise(freq=sum(nombre[breton==1]),freq_alea=sum(nombre[alea==1]))
+
+nais_dep90 <- prenoms %>% 
+  filter(annais==1990) %>%
+  group_by(dpt) %>% 
+  summarise(nb_naissances=sum(nombre))
+
+part90 <- part90 %>%
+  left_join(nais_dep90, by="dpt") %>%
+  mutate(freq=freq/nb_naissances,freq_alea=freq_alea/nb_naissances) %>%
+  ungroup () %>%
+  select(-nb_naissances)
+
+#1999
+part99 <- prenoms %>%
+  filter(annais==1999) %>%
+  group_by(dpt) %>%
+  summarise(freq=sum(nombre[breton==1]),freq_alea=sum(nombre[alea==1]))
+
+nais_dep99 <- prenoms %>% 
+  filter(annais==1999) %>%
+  group_by(dpt) %>% 
+  summarise(nb_naissances=sum(nombre))
+
+part99 <- part99 %>%
+  left_join(nais_dep99, by="dpt") %>%
+  mutate(freq=freq/nb_naissances,freq_alea=freq_alea/nb_naissances) %>%
+  ungroup () %>%
+  select(-nb_naissances)
+
+#2006
+part06 <- prenoms %>%
+  filter(annais==2006) %>%
+  group_by(dpt) %>%
+  summarise(freq=sum(nombre[breton==1]),freq_alea=sum(nombre[alea==1]))
+
+nais_dep06 <- prenoms %>% 
+  filter(annais==2006) %>%
+  group_by(dpt) %>% 
+  summarise(nb_naissances=sum(nombre))
+
+part06 <- part06 %>%
+  left_join(nais_dep06, by="dpt") %>%
+  mutate(freq=freq/nb_naissances,freq_alea=freq_alea/nb_naissances) %>%
+  ungroup () %>%
+  select(-nb_naissances)
+
+rm(list=c('nais_dep06', 'nais_dep68', 'nais_dep75', 'nais_dep82', 'nais_dep90', 'nais_dep99'))
+
+
+```
+# Age des prénoms bretons
+
+
+
+
+```{r}
+#création de la variable année de naissance moyenne pour les prénoms bretons
+#1968
+age68 <- prenoms %>%
+  filter(annais<1968) %>%
+  mutate(nbxannais=annais*nombre) %>%
+  group_by(breton,dpt) %>%
+  summarise(sumniai=sum(nbxannais))%>%
+  ungroup()
+
+effectif_prenom <- prenoms %>%
+  filter(annais<1968) %>%
+  group_by(breton,dpt) %>%
+  summarise(eff=sum(nombre))
+
+age68 <- age68 %>%
+  left_join(effectif_prenom, by=c("breton","dpt")) %>%
+  mutate(age_moy=1968 - sumniai/eff) %>%
+  filter(breton==1) %>%
+  select(c(dpt,age_moy))
+
+age68 <- age68 %>% add_row(dpt=c('91','92','93','94','95'),age_moy=0)
+
+rm(effectif_prenom)
+  
+```
+
+
+```{r}
+#1975
+age75 <- prenoms %>%
+  filter(annais<1975) %>%
+  mutate(nbxannais=annais*nombre) %>%
+  group_by(breton,dpt) %>%
+  summarise(sumniai=sum(nbxannais))%>%
+  ungroup()
+
+effectif_prenom <- prenoms %>%
+  filter(annais<1975) %>%
+  group_by(breton,dpt) %>%
+  summarise(eff=sum(nombre))
+
+age75 <- age75 %>%
+  left_join(effectif_prenom, by=c("breton","dpt")) %>%
+  mutate(age_moy=1975 - sumniai/eff) %>%
+  filter(breton==1) %>%
+  select(c(dpt,age_moy))
+
+rm(effectif_prenom)
+```
+
+
+```{r}
+#1982
+age82 <- prenoms %>%
+  filter(annais<1982) %>%
+  mutate(nbxannais=annais*nombre) %>%
+  group_by(breton,dpt) %>%
+  summarise(sumniai=sum(nbxannais))%>%
+  ungroup()
+
+effectif_prenom <- prenoms %>%
+  filter(annais<1982) %>%
+  group_by(breton,dpt) %>%
+  summarise(eff=sum(nombre))
+
+age82 <- age82 %>%
+  left_join(effectif_prenom, by=c("breton","dpt")) %>%
+  mutate(age_moy=1982 - sumniai/eff) %>%
+  filter(breton==1) %>%
+  select(c(dpt,age_moy))
+
+rm(effectif_prenom)
+```
+
+
+```{r}
+#1990
+age90 <- prenoms %>%
+  filter(annais<1990) %>%
+  mutate(nbxannais=annais*nombre) %>%
+  group_by(breton,dpt) %>%
+  summarise(sumniai=sum(nbxannais))%>%
+  ungroup()
+
+effectif_prenom <- prenoms %>%
+  filter(annais<1990) %>%
+  group_by(breton,dpt) %>%
+  summarise(eff=sum(nombre))
+
+age90 <- age90 %>%
+  left_join(effectif_prenom, by=c("breton","dpt")) %>%
+  mutate(age_moy=1990 - sumniai/eff) %>%
+  filter(breton==1) %>%
+  select(c(dpt,age_moy))
+
+rm(effectif_prenom)
+```
+
+```{r}
+#1999
+age99 <- prenoms %>%
+  filter(annais<1999) %>%
+  mutate(nbxannais=annais*nombre) %>%
+  group_by(breton,dpt) %>%
+  summarise(sumniai=sum(nbxannais)) %>%
+  ungroup()
+
+effectif_prenom <- prenoms %>%
+  filter(annais<1999) %>%
+  group_by(breton,dpt) %>%
+  summarise(eff=sum(nombre))
+
+age99 <- age99 %>%
+  left_join(effectif_prenom, by=c("breton","dpt")) %>%
+  mutate(age_moy=1999 - sumniai/eff) %>%
+  filter(breton==1) %>%
+  select(c(dpt,age_moy))
+
+rm(effectif_prenom)
+```
+
+```{r}
+#2006
+age06 <- prenoms %>%
+  filter(annais<2006) %>%
+  mutate(nbxannais=annais*nombre) %>%
+  group_by(breton,dpt) %>%
+  summarise(sumniai=sum(nbxannais)) %>%
+  ungroup()
+
+effectif_prenom <- prenoms %>%
+  filter(annais<2006) %>%
+  group_by(breton,dpt) %>%
+  summarise(eff=sum(nombre))
+
+age06 <- age06 %>%
+  left_join(effectif_prenom, by=c("breton","dpt")) %>%
+  mutate(age_moy=2006 - sumniai/eff) %>%
+  filter(breton==1) %>%
+  select(c(dpt,age_moy)) 
+
+rm(effectif_prenom)
+```
+
+
+```{r}
+#Recodage nécessaire car les départements 91 à 95 ont été créés après 1968. On les regroupe dans les départements 75 et 78.
+recodage_9195 <- function(base){
+  base$age_moy[base$dpt %in% c('92','93','94')] <- base$age_moy[base$dpt=="75"]
+  base$age_moy[base$dpt %in% c('91','95')] <- base$age_moy[base$dpt=="78"]
+  return(base)
+}
+
+age68 <- recodage_9195(age68)
+age75 <- recodage_9195(age75)
+age82 <- recodage_9195(age82)
+age90 <- recodage_9195(age90)
+age99 <- recodage_9195(age99)
+age06 <- recodage_9195(age06)
+```
+
+# Part de la population née en Bretagne
+
+
+Importation de la base crée à partir des recensements avec le code recensement_rmd.rmd et création des tables.
+
+```{r}
+prop_bretons_annee_dep <- read_excel("prop_bretons_annee_dep_new.xlsx")
+prop_bretons_annee_dep$dep_res <- as.character(prop_bretons_annee_dep$dep_res)
+prop_bretons_annee_dep$dep_res <- str_pad(prop_bretons_annee_dep$dep_res, 2, pad = "0")
+```
+
+
+```{r}
+#1968
+partbret68 <- prop_bretons_annee_dep %>%
+  select(c('dep_res','1968')) 
+colnames(partbret68) <- c('dpt', 'part_bret')
+partbret68 <- partbret68 %>%
+  mutate(part_bret=part_bret/100)
+
+#1975
+partbret75 <- prop_bretons_annee_dep %>%
+  select(c('dep_res','1975')) 
+colnames(partbret75) <- c('dpt', 'part_bret')
+partbret75 <- partbret75 %>%
+  mutate(part_bret=part_bret/100)
+
+#1982
+partbret82 <- prop_bretons_annee_dep %>%
+  select(c('dep_res','1982')) 
+colnames(partbret82) <- c('dpt', 'part_bret')
+partbret82 <- partbret82 %>%
+  mutate(part_bret=part_bret/100)
+
+#1990
+partbret90 <- prop_bretons_annee_dep %>%
+  select(c('dep_res','1990')) 
+colnames(partbret90) <- c('dpt', 'part_bret')
+partbret90 <- partbret90 %>%
+  mutate(part_bret=part_bret/100)
+
+#1999
+partbret99 <- prop_bretons_annee_dep %>%
+  select(c('dep_res','1999')) 
+colnames(partbret99) <- c('dpt', 'part_bret')
+partbret99 <- partbret99 %>%
+  mutate(part_bret=part_bret/100)
+
+#2006
+partbret06 <- prop_bretons_annee_dep %>%
+  select(c('dep_res','2006')) 
+colnames(partbret06) <- c('dpt', 'part_bret')
+partbret06 <- partbret06 %>%
+  mutate(part_bret=part_bret/100)
+
+rm(prop_bretons_annee_dep)
+
+```
+
+# Composition socio-professionnelle 
+
+Importation de la base créée à partir des recensements avec le code recensement_rmd.rmd et création des tables.
+
+```{r}
+compo_csp_pond <- read_excel("compo_csp_pond_new.xlsx")
+compo_csp_pond$dep_res <- as.character(compo_csp_pond$dep_res)
+compo_csp_pond$dep_res <- str_pad(compo_csp_pond$dep_res, 2, pad = "0")
+```
+1) Agriculteurs
+
+```{r}
+agr68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==1) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(agr68) <- c('dpt','prop_agr')
+
+agr75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==1) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(agr75) <- c('dpt','prop_agr')
+
+agr82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==1) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(agr82) <- c('dpt','prop_agr')
+
+agr90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==1) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(agr90) <- c('dpt','prop_agr')
+
+agr99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==1) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(agr99) <- c('dpt','prop_agr')
+
+agr06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==1) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(agr06) <- c('dpt','prop_agr')
+
+```
+
+2) Artisans
+
+```{r}
+art68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==2) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(art68) <- c('dpt','prop_art')
+
+art75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==2) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(art75) <- c('dpt','prop_art')
+
+art82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==2) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(art82) <- c('dpt','prop_art')
+
+art90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==2) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(art90) <- c('dpt','prop_art')
+
+art99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==2) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(art99) <- c('dpt','prop_art')
+
+art06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==2) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(art06) <- c('dpt','prop_art')
+```
+
+3) Cadres
+
+```{r}
+cad68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==3) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(cad68) <- c('dpt','prop_cad')
+
+cad75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==3) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(cad75) <- c('dpt','prop_cad')
+
+cad82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==3) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(cad82) <- c('dpt','prop_cad')
+
+cad90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==3) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(cad90) <- c('dpt','prop_cad')
+
+cad99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==3) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(cad99) <- c('dpt','prop_cad')
+
+cad06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==3) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(cad06) <- c('dpt','prop_cad')
+```
+
+4) PI
+
+```{r}
+pi68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==4) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(pi68) <- c('dpt','prop_pi')
+
+pi75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==4) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(pi75) <- c('dpt','prop_pi')
+
+pi82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==4) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(pi82) <- c('dpt','prop_pi')
+
+pi90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==4) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(pi90) <- c('dpt','prop_pi')
+
+pi99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==4) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(pi99) <- c('dpt','prop_pi')
+
+pi06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==4) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(pi06) <- c('dpt','prop_pi')
+```
+
+5) Employés
+
+```{r}
+emp68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==5) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(emp68) <- c('dpt','prop_emp')
+
+emp75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==5) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(emp75) <- c('dpt','prop_emp')
+
+emp82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==5) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(emp82) <- c('dpt','prop_emp')
+
+emp90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==5) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(emp90) <- c('dpt','prop_emp')
+
+emp99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==5) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(emp99) <- c('dpt','prop_emp')
+
+emp06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==5) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(emp06) <- c('dpt','prop_emp')
+```
+
+6) Ouvriers
+
+```{r}
+ouv68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==6) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ouv68) <- c('dpt','prop_ouv')
+
+ouv75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==6) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ouv75) <- c('dpt','prop_ouv')
+
+ouv82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==6) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ouv82) <- c('dpt','prop_ouv')
+
+ouv90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==6) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ouv90) <- c('dpt','prop_ouv')
+
+ouv99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==6) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ouv99) <- c('dpt','prop_ouv')
+
+ouv06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==6) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ouv06) <- c('dpt','prop_ouv')
+```
+
+8) Anciens actifs
+*
+
+```{r}
+anc68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==8) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(anc68) <- c('dpt','prop_anc')
+
+anc75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==8) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(anc75) <- c('dpt','prop_anc')
+
+anc82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==8) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(anc82) <- c('dpt','prop_anc')
+
+anc90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==8) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(anc90) <- c('dpt','prop_anc')
+
+anc99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==8) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(anc99) <- c('dpt','prop_anc')
+
+anc06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==8) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(anc06) <- c('dpt','prop_anc')
+```
+
+8) Inactifs et chômeurs n'ayant jamais travaillé
+*
+
+```{r}
+ina68 <- compo_csp_pond %>%
+  filter(annee==1968) %>%
+  filter(csp==9) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ina68) <- c('dpt','prop_ina')
+
+ina75 <- compo_csp_pond %>%
+  filter(annee==1975) %>%
+  filter(csp==9) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ina75) <- c('dpt','prop_ina')
+
+ina82 <- compo_csp_pond %>%
+  filter(annee==1982) %>%
+  filter(csp==9) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ina82) <- c('dpt','prop_ina')
+
+ina90 <- compo_csp_pond %>%
+  filter(annee==1990) %>%
+  filter(csp==9) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ina90) <- c('dpt','prop_ina')
+
+ina99 <- compo_csp_pond %>%
+  filter(annee==1999) %>%
+  filter(csp==9) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ina99) <- c('dpt','prop_ina')
+
+ina06 <- compo_csp_pond %>%
+  filter(annee==2006) %>%
+  filter(csp==9) %>%
+  mutate(prop=prop/100) %>%
+  select(c(dep_res, prop))
+colnames(ina06) <- c('dpt','prop_ina')
+```
+
+# Bases finales
+
+
+
+```{r}
+#1968
+base68 <- part68 %>%
+  left_join(partbret68, by='dpt')%>%
+  left_join(age68, by='dpt')%>%
+  left_join(agr68, by='dpt')%>%
+  left_join(art68, by='dpt')%>%
+  left_join(cad68, by='dpt')%>%
+  left_join(pi68, by='dpt')%>%
+  left_join(emp68, by='dpt')%>%
+  left_join(ouv68, by='dpt')%>%
+  left_join(anc68, by='dpt')%>%
+  left_join(ina68, by='dpt')
+  
+
+```
+
+
+
+```{r}
+#1975
+base75 <- part75 %>%
+  left_join(partbret75, by='dpt')%>%
+  left_join(age75, by='dpt')%>%
+  left_join(agr75, by='dpt')%>%
+  left_join(art75, by='dpt')%>%
+  left_join(cad75, by='dpt')%>%
+  left_join(pi75, by='dpt')%>%
+  left_join(emp75, by='dpt')%>%
+  left_join(ouv75, by='dpt')%>%
+  left_join(anc75, by='dpt')%>%
+  left_join(ina75, by='dpt')
+
+```
+
+
+```{r}
+#1982
+base82 <- part82 %>%
+  left_join(partbret82, by='dpt')%>%
+  left_join(age82, by='dpt')%>%
+  left_join(agr82, by='dpt')%>%
+  left_join(art82, by='dpt')%>%
+  left_join(cad82, by='dpt')%>%
+  left_join(pi82, by='dpt')%>%
+  left_join(emp82, by='dpt')%>%
+  left_join(ouv82, by='dpt')%>%
+  left_join(anc82, by='dpt')%>%
+  left_join(ina82, by='dpt')
+
+```
+
+
+```{r}
+#1990
+base90 <- part90 %>%
+  left_join(partbret90, by='dpt')%>%
+  left_join(age90, by='dpt')%>%
+  left_join(agr90, by='dpt')%>%
+  left_join(art90, by='dpt')%>%
+  left_join(cad90, by='dpt')%>%
+  left_join(pi90, by='dpt')%>%
+  left_join(emp90, by='dpt')%>%
+  left_join(ouv90, by='dpt')%>%
+  left_join(anc90, by='dpt')%>%
+  left_join(ina90, by='dpt')
+
+```
+
+
+```{r}
+#1999
+base99 <- part99 %>%
+  left_join(partbret99, by='dpt')%>%
+  left_join(age99, by='dpt')%>%
+  left_join(agr99, by='dpt')%>%
+  left_join(art99, by='dpt')%>%
+  left_join(cad99, by='dpt')%>%
+  left_join(pi99, by='dpt')%>%
+  left_join(emp99, by='dpt')%>%
+  left_join(ouv99, by='dpt')%>%
+  left_join(anc99, by='dpt')%>%
+  left_join(ina99, by='dpt')
+
+```
+
+
+```{r}
+#2006
+base06 <- part06 %>%
+  left_join(partbret06, by='dpt')%>%
+  left_join(age06, by='dpt')%>%
+  left_join(agr06, by='dpt')%>%
+  left_join(art06, by='dpt')%>%
+  left_join(cad06, by='dpt')%>%
+  left_join(pi06, by='dpt')%>%
+  left_join(emp06, by='dpt')%>%
+  left_join(ouv06, by='dpt')%>%
+  left_join(anc06, by='dpt')%>%
+  left_join(ina06, by='dpt')
+
+```
+
+# Variables des départements voisins
+
+```{r}
+contiguous <- read_excel("contiguous.xlsx")
+```
+
+```{r}
+base68 <- base68 %>%
+  mutate(dpt=as.numeric(dpt)) %>%
+  left_join(contiguous, by='dpt')
+```
+
+```{r}
+base68[,'avg_cont'] <- 0
+base68[,'bret_cont'] <- 0
+base68[,'age_cont'] <- 0
+base68[,'agr_cont'] <- 0
+base68[,'art_cont'] <- 0
+base68[,'cad_cont'] <- 0
+base68[,'pi_cont'] <- 0
+base68[,'emp_cont'] <- 0
+base68[,'ouv_cont'] <- 0
+base68[,'anc_cont'] <- 0
+base68[,'ina_cont'] <- 0
+base68[,'nb_vois'] <- 0
+```
+
+
+```{r}
+for (dep in 1:95) {
+  base68[dep,'nb_vois'] <- length(list(as.numeric(strsplit(base68[dep,'voisins'][[1]],',')[[1]]))[[1]])
+  for(voi in list(as.numeric(strsplit(base68[dep,'voisins'][[1]],',')[[1]]))[[1]]) {  
+      base68[dep, 'avg_cont'] <- base68[dep, 'avg_cont'] + base68[voi, 'freq']
+      base68[dep, 'bret_cont'] <- base68[dep, 'bret_cont'] + base68[voi, 'part_bret']
+      base68[dep, 'age_cont'] <- base68[dep, 'age_cont'] + base68[voi, 'age_moy']
+      base68[dep, 'agr_cont'] <- base68[dep, 'agr_cont'] + base68[voi, 'prop_agr']
+      base68[dep, 'art_cont'] <- base68[dep, 'art_cont'] + base68[voi, 'prop_art']
+      base68[dep, 'cad_cont'] <- base68[dep, 'cad_cont'] + base68[voi, 'prop_cad']
+      base68[dep, 'pi_cont'] <- base68[dep, 'pi_cont'] + base68[voi, 'prop_pi']
+      base68[dep, 'emp_cont'] <- base68[dep, 'emp_cont'] + base68[voi, 'prop_emp']
+      base68[dep, 'ouv_cont'] <- base68[dep, 'ouv_cont'] + base68[voi, 'prop_ouv']
+      base68[dep, 'anc_cont'] <- base68[dep, 'anc_cont'] + base68[voi, 'prop_anc']
+      base68[dep, 'ina_cont'] <- base68[dep, 'ina_cont'] + base68[voi, 'prop_ina']}
+   
+
+}
+
+base68 <- base68 %>%
+  mutate(avg_cont=avg_cont/nb_vois) %>%
+  mutate(bret_cont=bret_cont/nb_vois)%>%
+  mutate(age_cont=age_cont/nb_vois)%>%
+  mutate(agr_cont=agr_cont/nb_vois)%>%
+  mutate(art_cont=art_cont/nb_vois)%>%
+  mutate(cad_cont=cad_cont/nb_vois)%>%
+  mutate(pi_cont=pi_cont/nb_vois)%>%
+  mutate(emp_cont=emp_cont/nb_vois)%>%
+  mutate(ouv_cont=ouv_cont/nb_vois)%>%
+  mutate(anc_cont=anc_cont/nb_vois)%>%
+  mutate(ina_cont=ina_cont/nb_vois)
+```
+
+```{r}
+base75 <- base75 %>%
+  mutate(dpt=as.numeric(dpt)) %>%
+  left_join(contiguous, by='dpt')
+```
+
+```{r}
+base75[,'avg_cont'] <- 0
+base75[,'bret_cont'] <- 0
+base75[,'age_cont'] <- 0
+base75[,'agr_cont'] <- 0
+base75[,'art_cont'] <- 0
+base75[,'cad_cont'] <- 0
+base75[,'pi_cont'] <- 0
+base75[,'emp_cont'] <- 0
+base75[,'ouv_cont'] <- 0
+base75[,'anc_cont'] <- 0
+base75[,'ina_cont'] <- 0
+base75[,'nb_vois'] <- 0
+```
+
+
+```{r}
+for (dep in 1:95) {
+  base75[dep,'nb_vois'] <- length(list(as.numeric(strsplit(base75[dep,'voisins'][[1]],',')[[1]]))[[1]])
+  for(voi in list(as.numeric(strsplit(base75[dep,'voisins'][[1]],',')[[1]]))[[1]]) {  
+      base75[dep, 'avg_cont'] <- base75[dep, 'avg_cont'] + base75[voi, 'freq']
+      base75[dep, 'bret_cont'] <- base75[dep, 'bret_cont'] + base75[voi, 'part_bret']
+      base75[dep, 'age_cont'] <- base75[dep, 'age_cont'] + base75[voi, 'age_moy']
+      base75[dep, 'agr_cont'] <- base75[dep, 'agr_cont'] + base75[voi, 'prop_agr']
+      base75[dep, 'art_cont'] <- base75[dep, 'art_cont'] + base75[voi, 'prop_art']
+      base75[dep, 'cad_cont'] <- base75[dep, 'cad_cont'] + base75[voi, 'prop_cad']
+      base75[dep, 'pi_cont'] <- base75[dep, 'pi_cont'] + base75[voi, 'prop_pi']
+      base75[dep, 'emp_cont'] <- base75[dep, 'emp_cont'] + base75[voi, 'prop_emp']
+      base75[dep, 'ouv_cont'] <- base75[dep, 'ouv_cont'] + base75[voi, 'prop_ouv']
+      base75[dep, 'anc_cont'] <- base75[dep, 'anc_cont'] + base75[voi, 'prop_anc']
+      base75[dep, 'ina_cont'] <- base75[dep, 'ina_cont'] + base75[voi, 'prop_ina']}
+   
+
+}
+
+base75 <- base75 %>%
+  mutate(avg_cont=avg_cont/nb_vois) %>%
+  mutate(bret_cont=bret_cont/nb_vois)%>%
+  mutate(age_cont=age_cont/nb_vois)%>%
+  mutate(agr_cont=agr_cont/nb_vois)%>%
+  mutate(art_cont=art_cont/nb_vois)%>%
+  mutate(cad_cont=cad_cont/nb_vois)%>%
+  mutate(pi_cont=pi_cont/nb_vois)%>%
+  mutate(emp_cont=emp_cont/nb_vois)%>%
+  mutate(ouv_cont=ouv_cont/nb_vois)%>%
+  mutate(anc_cont=anc_cont/nb_vois)%>%
+  mutate(ina_cont=ina_cont/nb_vois)
+```
+
+
+```{r}
+base82 <- base82 %>%
+  mutate(dpt=as.numeric(dpt)) %>%
+  left_join(contiguous, by='dpt')
+```
+
+```{r}
+base82[,'avg_cont'] <- 0
+base82[,'bret_cont'] <- 0
+base82[,'age_cont'] <- 0
+base82[,'agr_cont'] <- 0
+base82[,'art_cont'] <- 0
+base82[,'cad_cont'] <- 0
+base82[,'pi_cont'] <- 0
+base82[,'emp_cont'] <- 0
+base82[,'ouv_cont'] <- 0
+base82[,'anc_cont'] <- 0
+base82[,'ina_cont'] <- 0
+base82[,'nb_vois'] <- 0
+```
+
+
+```{r}
+for (dep in 1:95) {
+  base82[dep,'nb_vois'] <- length(list(as.numeric(strsplit(base82[dep,'voisins'][[1]],',')[[1]]))[[1]])
+  for(voi in list(as.numeric(strsplit(base82[dep,'voisins'][[1]],',')[[1]]))[[1]]) {  
+      base82[dep, 'avg_cont'] <- base82[dep, 'avg_cont'] + base82[voi, 'freq']
+      base82[dep, 'bret_cont'] <- base82[dep, 'bret_cont'] + base82[voi, 'part_bret']
+      base82[dep, 'age_cont'] <- base82[dep, 'age_cont'] + base82[voi, 'age_moy']
+      base82[dep, 'agr_cont'] <- base82[dep, 'agr_cont'] + base82[voi, 'prop_agr']
+      base82[dep, 'art_cont'] <- base82[dep, 'art_cont'] + base82[voi, 'prop_art']
+      base82[dep, 'cad_cont'] <- base82[dep, 'cad_cont'] + base82[voi, 'prop_cad']
+      base82[dep, 'pi_cont'] <- base82[dep, 'pi_cont'] + base82[voi, 'prop_pi']
+      base82[dep, 'emp_cont'] <- base82[dep, 'emp_cont'] + base82[voi, 'prop_emp']
+      base82[dep, 'ouv_cont'] <- base82[dep, 'ouv_cont'] + base82[voi, 'prop_ouv']
+      base82[dep, 'anc_cont'] <- base82[dep, 'anc_cont'] + base82[voi, 'prop_anc']
+      base82[dep, 'ina_cont'] <- base82[dep, 'ina_cont'] + base82[voi, 'prop_ina']}
+   
+
+}
+
+base82 <- base82 %>%
+  mutate(avg_cont=avg_cont/nb_vois) %>%
+  mutate(bret_cont=bret_cont/nb_vois)%>%
+  mutate(age_cont=age_cont/nb_vois)%>%
+  mutate(agr_cont=agr_cont/nb_vois)%>%
+  mutate(art_cont=art_cont/nb_vois)%>%
+  mutate(cad_cont=cad_cont/nb_vois)%>%
+  mutate(pi_cont=pi_cont/nb_vois)%>%
+  mutate(emp_cont=emp_cont/nb_vois)%>%
+  mutate(ouv_cont=ouv_cont/nb_vois)%>%
+  mutate(anc_cont=anc_cont/nb_vois)%>%
+  mutate(ina_cont=ina_cont/nb_vois)
+```
+
+
+```{r}
+base90 <- base90 %>%
+  mutate(dpt=as.numeric(dpt)) %>%
+  left_join(contiguous, by='dpt')
+```
+
+```{r}
+base90[,'avg_cont'] <- 0
+base90[,'bret_cont'] <- 0
+base90[,'age_cont'] <- 0
+base90[,'agr_cont'] <- 0
+base90[,'art_cont'] <- 0
+base90[,'cad_cont'] <- 0
+base90[,'pi_cont'] <- 0
+base90[,'emp_cont'] <- 0
+base90[,'ouv_cont'] <- 0
+base90[,'anc_cont'] <- 0
+base90[,'ina_cont'] <- 0
+base90[,'nb_vois'] <- 0
+```
+
+
+```{r}
+for (dep in 1:95) {
+  base90[dep,'nb_vois'] <- length(list(as.numeric(strsplit(base90[dep,'voisins'][[1]],',')[[1]]))[[1]])
+  for(voi in list(as.numeric(strsplit(base90[dep,'voisins'][[1]],',')[[1]]))[[1]]) {  
+      base90[dep, 'avg_cont'] <- base90[dep, 'avg_cont'] + base90[voi, 'freq']
+      base90[dep, 'bret_cont'] <- base90[dep, 'bret_cont'] + base90[voi, 'part_bret']
+      base90[dep, 'age_cont'] <- base90[dep, 'age_cont'] + base90[voi, 'age_moy']
+      base90[dep, 'agr_cont'] <- base90[dep, 'agr_cont'] + base90[voi, 'prop_agr']
+      base90[dep, 'art_cont'] <- base90[dep, 'art_cont'] + base90[voi, 'prop_art']
+      base90[dep, 'cad_cont'] <- base90[dep, 'cad_cont'] + base90[voi, 'prop_cad']
+      base90[dep, 'pi_cont'] <- base90[dep, 'pi_cont'] + base90[voi, 'prop_pi']
+      base90[dep, 'emp_cont'] <- base90[dep, 'emp_cont'] + base90[voi, 'prop_emp']
+      base90[dep, 'ouv_cont'] <- base90[dep, 'ouv_cont'] + base90[voi, 'prop_ouv']
+      base90[dep, 'anc_cont'] <- base90[dep, 'anc_cont'] + base90[voi, 'prop_anc']
+      base90[dep, 'ina_cont'] <- base90[dep, 'ina_cont'] + base90[voi, 'prop_ina']}
+   
+
+}
+
+base90 <- base90 %>%
+  mutate(avg_cont=avg_cont/nb_vois) %>%
+  mutate(bret_cont=bret_cont/nb_vois)%>%
+  mutate(age_cont=age_cont/nb_vois)%>%
+  mutate(agr_cont=agr_cont/nb_vois)%>%
+  mutate(art_cont=art_cont/nb_vois)%>%
+  mutate(cad_cont=cad_cont/nb_vois)%>%
+  mutate(pi_cont=pi_cont/nb_vois)%>%
+  mutate(emp_cont=emp_cont/nb_vois)%>%
+  mutate(ouv_cont=ouv_cont/nb_vois)%>%
+  mutate(anc_cont=anc_cont/nb_vois)%>%
+  mutate(ina_cont=ina_cont/nb_vois)
+```
+
+
+```{r}
+base99 <- base99 %>%
+  mutate(dpt=as.numeric(dpt)) %>%
+  left_join(contiguous, by='dpt')
+```
+
+```{r}
+base99[,'avg_cont'] <- 0
+base99[,'bret_cont'] <- 0
+base99[,'age_cont'] <- 0
+base99[,'agr_cont'] <- 0
+base99[,'art_cont'] <- 0
+base99[,'cad_cont'] <- 0
+base99[,'pi_cont'] <- 0
+base99[,'emp_cont'] <- 0
+base99[,'ouv_cont'] <- 0
+base99[,'anc_cont'] <- 0
+base99[,'ina_cont'] <- 0
+base99[,'nb_vois'] <- 0
+```
+
+
+```{r}
+for (dep in 1:95) {
+  base99[dep,'nb_vois'] <- length(list(as.numeric(strsplit(base99[dep,'voisins'][[1]],',')[[1]]))[[1]])
+  for(voi in list(as.numeric(strsplit(base99[dep,'voisins'][[1]],',')[[1]]))[[1]]) {  
+      base99[dep, 'avg_cont'] <- base99[dep, 'avg_cont'] + base99[voi, 'freq']
+      base99[dep, 'bret_cont'] <- base99[dep, 'bret_cont'] + base99[voi, 'part_bret']
+      base99[dep, 'age_cont'] <- base99[dep, 'age_cont'] + base99[voi, 'age_moy']
+      base99[dep, 'agr_cont'] <- base99[dep, 'agr_cont'] + base99[voi, 'prop_agr']
+      base99[dep, 'art_cont'] <- base99[dep, 'art_cont'] + base99[voi, 'prop_art']
+      base99[dep, 'cad_cont'] <- base99[dep, 'cad_cont'] + base99[voi, 'prop_cad']
+      base99[dep, 'pi_cont'] <- base99[dep, 'pi_cont'] + base99[voi, 'prop_pi']
+      base99[dep, 'emp_cont'] <- base99[dep, 'emp_cont'] + base99[voi, 'prop_emp']
+      base99[dep, 'ouv_cont'] <- base99[dep, 'ouv_cont'] + base99[voi, 'prop_ouv']
+      base99[dep, 'anc_cont'] <- base99[dep, 'anc_cont'] + base99[voi, 'prop_anc']
+      base99[dep, 'ina_cont'] <- base99[dep, 'ina_cont'] + base99[voi, 'prop_ina']}
+   
+
+}
+
+base99 <- base99 %>%
+  mutate(avg_cont=avg_cont/nb_vois) %>%
+  mutate(bret_cont=bret_cont/nb_vois)%>%
+  mutate(age_cont=age_cont/nb_vois)%>%
+  mutate(agr_cont=agr_cont/nb_vois)%>%
+  mutate(art_cont=art_cont/nb_vois)%>%
+  mutate(cad_cont=cad_cont/nb_vois)%>%
+  mutate(pi_cont=pi_cont/nb_vois)%>%
+  mutate(emp_cont=emp_cont/nb_vois)%>%
+  mutate(ouv_cont=ouv_cont/nb_vois)%>%
+  mutate(anc_cont=anc_cont/nb_vois)%>%
+  mutate(ina_cont=ina_cont/nb_vois)
+```
+
+```{r}
+base06 <- base06 %>%
+  mutate(dpt=as.numeric(dpt)) %>%
+  left_join(contiguous, by='dpt')
+```
+
+```{r}
+base06[,'avg_cont'] <- 0
+base06[,'bret_cont'] <- 0
+base06[,'age_cont'] <- 0
+base06[,'agr_cont'] <- 0
+base06[,'art_cont'] <- 0
+base06[,'cad_cont'] <- 0
+base06[,'pi_cont'] <- 0
+base06[,'emp_cont'] <- 0
+base06[,'ouv_cont'] <- 0
+base06[,'anc_cont'] <- 0
+base06[,'ina_cont'] <- 0
+base06[,'nb_vois'] <- 0
+```
+
+
+```{r}
+for (dep in 1:95) {
+  base06[dep,'nb_vois'] <- length(list(as.numeric(strsplit(base06[dep,'voisins'][[1]],',')[[1]]))[[1]])
+  for(voi in list(as.numeric(strsplit(base06[dep,'voisins'][[1]],',')[[1]]))[[1]]) {  
+      base06[dep, 'avg_cont'] <- base06[dep, 'avg_cont'] + base06[voi, 'freq']
+      base06[dep, 'bret_cont'] <- base06[dep, 'bret_cont'] + base06[voi, 'part_bret']
+      base06[dep, 'age_cont'] <- base06[dep, 'age_cont'] + base06[voi, 'age_moy']
+      base06[dep, 'agr_cont'] <- base06[dep, 'agr_cont'] + base06[voi, 'prop_agr']
+      base06[dep, 'art_cont'] <- base06[dep, 'art_cont'] + base06[voi, 'prop_art']
+      base06[dep, 'cad_cont'] <- base06[dep, 'cad_cont'] + base06[voi, 'prop_cad']
+      base06[dep, 'pi_cont'] <- base06[dep, 'pi_cont'] + base06[voi, 'prop_pi']
+      base06[dep, 'emp_cont'] <- base06[dep, 'emp_cont'] + base06[voi, 'prop_emp']
+      base06[dep, 'ouv_cont'] <- base06[dep, 'ouv_cont'] + base06[voi, 'prop_ouv']
+      base06[dep, 'anc_cont'] <- base06[dep, 'anc_cont'] + base06[voi, 'prop_anc']
+      base06[dep, 'ina_cont'] <- base06[dep, 'ina_cont'] + base06[voi, 'prop_ina']}
+   
+
+}
+
+base06 <- base06 %>%
+  mutate(avg_cont=avg_cont/nb_vois) %>%
+  mutate(bret_cont=bret_cont/nb_vois)%>%
+  mutate(age_cont=age_cont/nb_vois)%>%
+  mutate(agr_cont=agr_cont/nb_vois)%>%
+  mutate(art_cont=art_cont/nb_vois)%>%
+  mutate(cad_cont=cad_cont/nb_vois)%>%
+  mutate(pi_cont=pi_cont/nb_vois)%>%
+  mutate(emp_cont=emp_cont/nb_vois)%>%
+  mutate(ouv_cont=ouv_cont/nb_vois)%>%
+  mutate(anc_cont=anc_cont/nb_vois)%>%
+  mutate(ina_cont=ina_cont/nb_vois)
+```
+
+
+# Indicatrice Bretagne 
+
+```{r}
+base68 <- base68 %>%
+  mutate(reg_bret = ifelse(dpt %in% c(22,29,35,56),1,0))
+base75 <- base75 %>%
+  mutate(reg_bret = ifelse(dpt %in% c(22,29,35,56),1,0))
+base82 <- base82 %>%
+  mutate(reg_bret = ifelse(dpt %in% c(22,29,35,56),1,0))
+base90 <- base90 %>%
+  mutate(reg_bret = ifelse(dpt %in% c(22,29,35,56),1,0))
+base99 <- base99 %>%
+  mutate(reg_bret = ifelse(dpt %in% c(22,29,35,56),1,0))
+base06 <- base06 %>%
+  mutate(reg_bret = ifelse(dpt %in% c(22,29,35,56),1,0))
+```
+
+#Ajout de la variable de densité
+```{r}
+densite <- read_xlsx("RP_pour_densite.xlsx") %>% 
+  select(-c(LIBGEO,P18_POP,P13_POP))
+
+densite <- densite %>% group_by(DEP) %>% 
+  summarise(pop08=sum(P08_POP),pop99=sum(D99_POP),pop90=sum(D90_POP),pop82=sum(D82_POP),pop75=sum(D75_POP),pop68=sum(D68_POP),SUPERF=sum(SUPERF)) %>% 
+  mutate(dens68=pop68/SUPERF,dens75=pop75/SUPERF,dens82=pop82/SUPERF,dens90=pop90/SUPERF,dens99=pop99/SUPERF,dens08=pop08/SUPERF) %>% 
+  select(-starts_with('pop'))
+
+densite <- densite %>% mutate(dpt=as.numeric(DEP))
+
+```
+
+```{r}
+base68 <- base68 %>% left_join(select(densite,c(dens68,dpt)),by='dpt') %>% 
+  rename(densite=dens68)
+base75 <- base75 %>% left_join(select(densite,c(dens75,dpt)),by='dpt') %>% 
+  rename(densite=dens75)
+base82 <- base82 %>% left_join(select(densite,c(dens82,dpt)),by='dpt') %>% 
+  rename(densite=dens82)
+base90 <- base90 %>% left_join(select(densite,c(dens90,dpt)),by='dpt') %>% 
+  rename(densite=dens90)
+base99 <- base99 %>% left_join(select(densite,c(dens99,dpt)),by='dpt') %>% 
+  rename(densite=dens99)
+base06 <- base06 %>% left_join(select(densite,c(dens08,dpt)),by='dpt') %>% 
+  rename(densite=dens08)
+
+
+```
+
+
+
+
+# Création des paires de départements et de ind_voisins
+
+
+```{r}
+paires <- contiguous
+paires <- setNames(data.frame(matrix(ncol = 2, nrow = 4465)), c("dpt1", "dpt2")) #95(95-1)/2 = 4465
+for(i in 1:95){
+  #print(i)
+  for(j in 1:95){
+    #print(j)
+    paires[(i-1)*95+j,1] <- i
+    paires[(i-1)*95+j,2] <- j
+    
+    
+  }
+}
+
+
+paires <- paires %>% 
+  filter(dpt1!=dpt2) %>%
+  filter(dpt1!=20) %>%
+  filter(dpt2!=20) %>%
+  left_join(contiguous, by = c("dpt1" = "dpt")) %>%
+  left_join(contiguous, by = c("dpt2" = "dpt"))
+
+paires[,'ind_voisins'] <- 0
+
+for(i in 1:dim(paires)[1]){
+  if(paires[i,'dpt2'] %in% list(as.numeric(strsplit(paires[i,'voisins.x'][[1]],',')[[1]]))[[1]]){
+   paires[i,'ind_voisins'] <- 1}else{paires[i,'ind_voisins'] <- 0}
+  
+}
+
+```
+
+# Ajout des variables de distance
+
+```{r}
+distance_bretagne <- read.csv("distance_bretagne.csv",sep=";",encoding = "UTF-8") %>%
+  select(c(X, dist_min))
+
+  
+matrice_distance_paires <- read.csv("matrice_distance_paires.csv",sep=";") %>%
+  pivot_longer(!X,names_to = "dpt2", values_to = "distance_géo") %>%
+  mutate(dpt2=sub('X', '', dpt2)) %>%
+  mutate(X=as.numeric(X)) %>%
+  mutate(dpt2=as.numeric(dpt2))
+
+colnames(distance_bretagne)[1] <- 'dpt'
+colnames(matrice_distance_paires)[1] <- 'dpt1'
+
+```
+
+```{r}
+paires <- paires %>%
+  left_join(matrice_distance_paires, by=c("dpt1", "dpt2"))
+```
+
+```{r}
+base68 <- base68 %>% 
+  left_join(distance_bretagne, by="dpt")
+
+base75 <- base75 %>% 
+  left_join(distance_bretagne, by="dpt")
+
+base82 <- base82 %>% 
+  left_join(distance_bretagne, by="dpt")
+
+base90 <- base90 %>% 
+  left_join(distance_bretagne, by="dpt")
+
+base99 <- base99 %>% 
+  left_join(distance_bretagne, by="dpt")
+
+base06 <- base06 %>% 
+  left_join(distance_bretagne, by="dpt")
+```
+
+
+
+# Exportation des bases
+
+```{r}
+write_xlsx(base68,"base68.xlsx")
+write_xlsx(base75,"base75.xlsx")
+write_xlsx(base82,"base82.xlsx")
+write_xlsx(base90,"base90.xlsx")
+write_xlsx(base99,"base99.xlsx")
+write_xlsx(base06,"base06.xlsx")
+```
+
+```{r}
+write_xlsx(paires,"paires.xlsx")
+```
+
+
+
+

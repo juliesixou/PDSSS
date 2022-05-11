@@ -1,0 +1,224 @@
+---
+title: "regressions"
+author: "Cecile"
+date: "16/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Description du document 
+
+Ce document vise à produire les tables de régressions à partir de modèles empiriques inspirés par Head & Mayer (2008). Il se décompose en trois partie :
+ - Préparation de la base de données
+ - OLS
+ - Manhattan Distance
+ 
+ Inputs : 
+ (Les tables obtenues à partir du code 01_Creation_bases.Rmd)
+  - base68.xlsx
+  - base75.xlsx
+  - base82.xlsx
+  - base90.xlsx
+  - base99.xlsx
+  - base06.xlsx
+  - paires.xlsx
+  
+# Initialisation  
+  
+Packages 
+```{r}
+library(dplyr)
+library(readxl)
+library(tidyverse)
+library("writexl")
+library(foreign)
+library(DAAG)
+library(tidyr)
+library(lfe)
+library(stargazer)
+library(miceadds)
+```
+
+
+
+Chargement des bases
+```{r}
+base68 <- read_excel("base68.xlsx")
+base75 <- read_excel("base75.xlsx")
+base82 <- read_excel("base82.xlsx")
+base90 <- read_excel("base90.xlsx")
+base99 <- read_excel("base99.xlsx")
+base06 <- read_excel("base06.xlsx")
+```
+
+
+
+# Préparation de la base
+
+Ajout des dummies années
+
+```{r}
+base68 <- base68 %>%
+  mutate(y1968=1,
+         y1975=0,
+         y1982=0,
+         y1990=0,
+         y1999=0,
+         y2006=0)
+
+base75 <- base75 %>%
+  mutate(y1968=0,
+         y1975=1,
+         y1982=0,
+         y1990=0,
+         y1999=0,
+         y2006=0)
+
+base82 <- base82 %>%
+  mutate(y1968=0,
+         y1975=0,
+         y1982=1,
+         y1990=0,
+         y1999=0,
+         y2006=0)
+
+base90 <- base90 %>%
+  mutate(y1968=0,
+         y1975=0,
+         y1982=0,
+         y1990=1,
+         y1999=0,
+         y2006=0)
+
+base99 <- base99 %>%
+  mutate(y1968=0,
+         y1975=0,
+         y1982=0,
+         y1990=0,
+         y1999=1,
+         y2006=0)
+
+base06 <- base06 %>%
+  mutate(y1968=0,
+         y1975=0,
+         y1982=0,
+         y1990=0,
+         y1999=0,
+         y2006=1)
+
+```
+
+Base unique
+
+```{r}
+base_dum <- rbind(base68, base75, base82, base90, base99, base06) %>%
+  filter(dpt<=95) %>%
+  filter(dpt!=20) %>%
+  mutate(dpt=as.factor(dpt)) %>%
+  mutate(annee = ifelse(y1968==1, 1968,ifelse(y1975==1,1975,ifelse(y1982==1,1982,ifelse(y1990==1,1990,ifelse(y1999==1,1999,2006)))))) %>%
+  mutate(annee=as.factor(annee)) 
+
+base_dum <- base_dum %>%
+  mutate(prop_inanc = prop_ina+prop_anc)
+
+```
+
+# Régression de la part des prénoms bretons (OLS)
+
+```{r}
+reg_fe_cl <- lm.cluster(freq ~ part_bret + reg_bret + age_moy + avg_cont + prop_agr + prop_art + prop_cad + prop_emp + prop_ouv + prop_anc + prop_ina + annee + annee:part_bret + annee:reg_bret + annee:age_moy + annee:avg_cont + dpt , cluster='dpt',data=base_dum)
+summary(reg_fe_cl)
+```
+
+# Distances de Manhattan 
+
+```{r}
+paires <- read_excel("paires.xlsx")
+```
+
+
+```{r}
+#Automatisation du modèle avec distance 
+create_paires <- function(base){
+  new <- paires %>%
+  left_join(base, by = c("dpt1" = "dpt")) %>%
+  select(-c("avg_cont","bret_cont","age_cont","agr_cont","art_cont","cad_cont","pi_cont","emp_cont","ouv_cont","anc_cont","ina_cont","nb_vois")) %>%
+  left_join(base, by = c("dpt2" = "dpt")) %>%
+  select(-c("avg_cont","bret_cont","age_cont","agr_cont","art_cont","cad_cont","pi_cont","emp_cont","ouv_cont","anc_cont","ina_cont","nb_vois")) %>%
+  select(-c("voisins.x.x","voisins.y.y")) %>%
+  mutate(MD_prenoms=2*abs(freq.x-freq.y)) %>%
+  mutate(MD_alea=2*abs(freq_alea.x-freq_alea.y)) %>% 
+  mutate(MD_bretons=2*abs(part_bret.x-part_bret.y)) %>%
+  mutate(MD_pcs=abs(prop_agr.x-prop_agr.y)+abs(prop_art.x-prop_art.y)+abs(prop_cad.x-prop_cad.y)+abs(prop_pi.x-prop_pi.y)+abs(prop_emp.x-prop_emp.y)+abs(prop_ouv.x-prop_ouv.y)+abs(prop_anc.x-prop_anc.y)+abs(prop_ina.x-prop_ina.y))
+  return(new)
+}
+
+modeleDIST_TFE <- function(base_paires){
+  estim <- plm(MD_prenoms ~ MD_bretons + MD_pcs + ind_voisins + distance_géo, data=base_paires,index = c("dpt1","dpt2","annee"), model = "within")
+  print(summary(estim))
+  return(stargazer(estim,type="latex",column.sep.width = "5pt",font.size = "small"))
+}
+```
+
+```{r}
+base_dum <- base_dum %>%
+  mutate(dpt=as.numeric(dpt))
+dum_paire <- create_paires(base_dum) %>%
+  filter(annee.x==annee.y)
+```
+
+# Régression avec Bretagne
+
+```{r}
+est_md <- felm(MD_prenoms ~ MD_bretons + MD_pcs + ind_voisins + distance_géo + annee.x:MD_bretons + annee.x:MD_pcs + annee.x:ind_voisins + annee.x:distance_géo |dpt1+dpt2+annee.x,data=dum_paire)
+summary(est_md)
+```
+
+```{r}
+stargazer(est_md,type="latex",column.sep.width = "5pt",font.size = "small",single.row=TRUE)
+```
+
+# Régression sans Bretagne
+
+```{r}
+base_dum_nobret <- base_dum %>% filter(reg_bret==0)
+```
+
+```{r}
+base_dum_nobret <- base_dum_nobret %>%
+  mutate(dpt=as.numeric(dpt))
+dum_paire_nobret <- create_paires(base_dum_nobret) %>%
+  filter(annee.x==annee.y)
+```
+
+
+```{r}
+
+est_md_nobret <- felm(MD_prenoms ~ MD_bretons + MD_pcs + ind_voisins + distance_géo + annee.x:MD_bretons + annee.x:MD_pcs + annee.x:ind_voisins + annee.x:distance_géo |dpt1+dpt2+annee.x,data=dum_paire_nobret)
+summary(est_md_nobret)
+
+```
+
+```{r}
+stargazer(est_md,est_md_nobret,type="latex",column.sep.width = "5pt",font.size = "small",single.row=TRUE)
+```
+
+
+# Robustesse: test du modèle avec une autre liste de prénoms
+
+```{r}
+reg_robust <- lm.cluster(freq_alea ~ part_bret + reg_bret + avg_cont + prop_agr + prop_art + prop_cad + prop_emp + prop_ouv + prop_anc + prop_ina + annee + annee:part_bret + annee:reg_bret + annee:avg_cont + dpt , cluster='dpt',data=base_dum)
+summary(reg_robust)
+```
+
+```{r}
+md_robust <- felm(MD_alea ~ MD_bretons + MD_pcs + ind_voisins + distance_géo + annee.x:MD_bretons + annee.x:MD_pcs + annee.x:ind_voisins + annee.x:distance_géo |dpt1+dpt2+annee.x,data=dum_paire)
+summary(md_robust)
+```
+
+
+
