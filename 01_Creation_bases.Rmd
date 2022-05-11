@@ -118,7 +118,7 @@ prenoms_bretons_donnes <- prenoms %>% filter(breton==1) %>% distinct(preusuel)
 ```
 
 ```{r}
-#Prénoms aléatoires pour le test de robustesse
+#Prénoms non-bretons pour le test de robustesse: on prend les 371 plus donnés du fichier des prénoms, sur toute la période, pour avoir autant de prénoms 
 prenoms_alea <- read.csv("dpt2020.csv",sep=";",encoding = "UTF-8") %>%
   mutate(annais=as.numeric(annais)) %>%
   mutate(nombre=as.numeric(nombre)) %>%
